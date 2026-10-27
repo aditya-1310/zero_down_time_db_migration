@@ -16,9 +16,13 @@ export function createBaselineSchema(db) {
     );
 
     CREATE TABLE IF NOT EXISTS orders (
-      id             INTEGER PRIMARY KEY AUTOINCREMENT,
-      customer_name  TEXT NOT NULL,
-      customer_email TEXT NOT NULL,
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      -- Nullable by design (EDD §2 step 6): after 'stop-legacy-writes' the app
+      -- inserts without these columns, and rows written before 'contract' drops
+      -- them carry NULL legacy cols. NOT NULL here would 500 every write in
+      -- that window -- the one real way to cause an outage in this migration.
+      customer_name  TEXT,
+      customer_email TEXT,
       amount_cents   INTEGER NOT NULL,
       status         TEXT NOT NULL DEFAULT 'new',
       created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
