@@ -25,10 +25,10 @@ verify check that fails twice after investigation. Roll back the current phase
 | Phase | Command | Gate to proceed | Rollback |
 |-------|---------|-----------------|----------|
 | 1. Expand | `npm run migrate -- expand` | output says added; `status` shows `expanded: true` | drop the new column + customers table |
-| 2. Dual-write on | `npm run migrate -- enable-dual` | `GET /health` shows `write_mode: dual`; spot-check a POST returns a `customer_id` | `npm run migrate -- rollback-dual` |
+| 2. Dual-write on | `npm run migrate -- enable-dual` | `GET /health` shows `write_mode: dual`; spot-check a POST returns a `customer_id` | `npm run migrate -- rollback-dual` (CLI refuses once reads are joined — roll reads back first) |
 | 3. Backfill | `npm run migrate -- backfill` | finishes with `0 unmapped`; **rerun it** — second run maps 0 rows (idempotency proof) | none needed — rerun resumes |
 | 4. Verify | `npm run migrate -- verify` | exit 0, all checks PASS | n/a (read-only) |
-| 5. Cut reads over | `npm run migrate -- switch-reads` | `GET /orders` shows `read_mode: joined`; soak ≥ 5 min (demo: 4 s) | `npm run migrate -- rollback-reads` |
+| 5. Cut reads over | `npm run migrate -- switch-reads` | `GET /orders` shows `read_mode: joined`; `write_mode` must not be `legacy` (CLI enforces — joined reads hide rows written without `customer_id`); soak ≥ 5 min (demo: 4 s) | `npm run migrate -- rollback-reads` |
 | 6. Stop legacy writes | `npm run migrate -- stop-legacy-writes` | `write_mode: new`; POSTs still 201; watch error rate | set `write_mode=dual` (partial: rows since cutover have NULL legacy cols — joined reads unaffected) |
 | 7. Contract | `npm run migrate -- contract --yes` | **point of no return** — only after checklist §7 | restore from the phase-0 backup |
 

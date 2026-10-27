@@ -103,7 +103,53 @@ and caught while writing the skip logic (regression test added).
 rows that don't validate — and the policy should fail loudly, not repair
 silently. Migration tooling earns trust by stopping, not by improvising.
 
-## What went well
+## Incident 3 — The invisible order (found by an adversarial break-session, fixed before anyone could trip on it)
+
+**What the attack was.** A deliberate out-of-order sequence, run against the
+finished tooling: complete dual-write + backfill, `rollback-dual` (back to
+legacy-only writes), run `verify` (passes — zero unmapped rows at that instant),
+then `switch-reads`. Every gate was individually satisfied. Then a new order
+arrived: the API accepted it (201), the row was in the database — and **joined
+reads never showed it**, because the row had no `customer_id` and the JOIN drops
+exactly those rows. A written order, invisible to every customer.
+
+**Root cause.** `switch-reads` gated on a *historical* verify pass but not on
+the *current* write mode. Verify's "0 unmapped" is a statement about the past;
+the moment writes revert to legacy-only, new unmapped rows are created and
+joined reads hide them. A second gap sat in the rollback path: `rollback-dual`
+had no guard at all, so it could be combined with joined reads into the same
+trap.
+
+**Fix.** Three changes, all machine-enforced: `switch-reads` refuses when
+`write_mode` is `legacy` (reads may only cut over while dual-write is on or
+legacy writes already stopped); `rollback-dual` refuses once reads are joined
+(roll reads back first); and `verify` now runs all its counts inside one
+snapshot transaction so a write landing mid-verify can't produce mixed numbers.
+
+**Lesson.** Gates that check history ("verify passed once") need companions
+that check the present ("the world is still in the shape verify assumed"). The
+fix cost three lines; finding it cost a break-session — which is why you run
+those before an operator does it for you.
+
+## Incident 4 — The demo that measured the wrong server (orphan process, found in the same break-session)
+
+**What happened.** When the demo process itself is SIGKILLed, its cleanup
+handler never runs, and the API server it spawned survives as an orphan holding
+the port. A rerun then spawns its own server (which fails to bind silently) and
+every health check, load request, and spot check hit the **stale orphan** — a
+process whose database file was deleted out from under it. The run aborted at
+the read-cutover spot check (the inconsistency was caught — the honesty checks
+work), but the first line of defense was missing.
+
+**Fix.** The demo now probes the port **before spawning anything** and aborts
+with an actionable message if it's occupied ("find and kill the orphan, then
+rerun"). The probe initially only checked `127.0.0.1` and missed an orphan
+bound to all interfaces — the probe now binds exactly the way the server does.
+
+**Lesson.** Test the failure of the test harness. The migration logic was fine;
+the *measurement* layer was one SIGKILL away from lying.
+
+
 
 - **Zero-downtime held through the destructive step.** Contract (DROP COLUMN)
   was the latency peak (p95 28 ms vs 3 ms steady-state) and caused **zero

@@ -4,6 +4,25 @@
 export function runVerify(db) {
   const q = (sql) => db.prepare(sql).get();
 
+  // One snapshot for all counts: without a transaction each statement sees its
+  // own view, and a write landing mid-verify could produce mixed numbers.
+  db.exec('BEGIN DEFERRED');
+  try {
+    const result = collectVerify(db, q);
+    db.exec('COMMIT');
+    return result;
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      /* BEGIN itself failed — surface the real error */
+    }
+    throw err;
+  }
+}
+
+function collectVerify(db, q) {
+
   const counts = {
     orders: q('SELECT count(*) AS c FROM orders').c,
     unmapped_orders: q('SELECT count(*) AS c FROM orders WHERE customer_id IS NULL').c,

@@ -7,6 +7,7 @@
 
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import http from 'node:http';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -90,6 +91,29 @@ async function fetchJson(url) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`GET ${url} -> HTTP ${res.status}`);
   return res.json();
+}
+
+// A SIGKILLed demo cannot run its cleanup handler, so its API server child can
+// survive as an orphan holding the port — and a rerun would then talk to that
+// stale process (whose db file was deleted out from under it). Fail fast and
+// say so instead of silently measuring the wrong server.
+async function assertPortFree(port) {
+  const probe = http.createServer();
+  try {
+    // No host argument — probe exactly the way src/server.js binds, so an
+    // orphan on any interface is caught (127.0.0.1-only misses a :: listener).
+    await new Promise((resolve, reject) => {
+      probe.once('error', reject);
+      probe.listen(port, resolve);
+    });
+  } catch {
+    throw new Error(
+      `port ${port} is already in use — a previous demo was likely killed and left its api server running. ` +
+        `Find and kill that process (netstat -ano | findstr :${port}, then taskkill /PID <pid> /F) and rerun.`
+    );
+  } finally {
+    await new Promise((resolve) => probe.close(resolve));
+  }
 }
 
 async function waitForHealth(maxMs = 10000) {
@@ -260,6 +284,7 @@ async function main() {
   console.log(`=== zero-downtime migration demo ===`);
   console.log(`db: ${dbPath}`);
   console.log(`seed: ${fmt(seedCount)} orders · api: ${baseUrl} · mode: ${chaos ? 'CHAOS (backfill killed mid-run)' : 'normal'}`);
+  await assertPortFree(port);
 
   // (a) Fresh db — seeded in-process, no child needed for this part.
   for (const suffix of ['', '-wal', '-shm']) {

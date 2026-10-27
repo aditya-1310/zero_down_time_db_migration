@@ -140,6 +140,13 @@ const commands = {
   'switch-reads'(db) {
     requireExpanded(db);
     requireVerifyPassed(db);
+    // Joined reads JOIN on customer_id, so any row written without one
+    // (write_mode=legacy) would silently vanish from listings. Reads may only
+    // cut over while dual-write is on or legacy writes already stopped.
+    const writeMode = getConfig(db, 'write_mode');
+    if (writeMode === 'legacy') {
+      fail("gate: write_mode is 'legacy' — dual-write must be on before reads cut over, or every order written from now on would be invisible to joined reads");
+    }
     setConfig(db, 'read_mode', 'joined');
     markPhaseDone(db, 'switch-reads', { read_mode: 'joined' });
     info('switch-reads: reads now JOIN customers (rollback: migrate rollback-reads)');
@@ -174,6 +181,9 @@ const commands = {
   },
 
   'rollback-dual'(db) {
+    if (getConfig(db, 'read_mode') === 'joined') {
+      fail('gate: reads are already on joined — rollback reads first (migrate rollback-reads), or rows written in legacy mode would be invisible');
+    }
     setConfig(db, 'write_mode', 'legacy');
     info('rollback-dual: write_mode=legacy (safe: legacy columns were still being written)');
   },
