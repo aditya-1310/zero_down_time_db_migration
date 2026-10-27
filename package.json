@@ -7,11 +7,11 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "test": "node --test test/",
-    "seed": "node scripts/seed.js",
-    "server": "node src/server.js",
-    "migrate": "node src/migrate.js",
-    "demo": "node scripts/demo.js",
-    "demo:chaos": "node scripts/demo.js --chaos"
+    "test": "node --no-warnings --test test/",
+    "seed": "node --no-warnings scripts/seed.js",
+    "server": "node --no-warnings src/server.js",
+    "migrate": "node --no-warnings src/migrate.js",
+    "demo": "node --no-warnings scripts/demo.js",
+    "demo:chaos": "node --no-warnings scripts/demo.js --chaos"
   }
 }
