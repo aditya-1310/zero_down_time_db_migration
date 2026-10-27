@@ -106,6 +106,7 @@ are refused by gates in the CLI, not by operator discipline.
 - [Engineering design doc](docs/edd.md) — the decisions, invariants, failure modes
 - [Runbook](docs/runbook.md) — operator-grade phase table with gates and rollbacks, incl. PostgreSQL translation
 - [Post-mortem](docs/postmortem.md) — timeline, real metrics, and the two bugs that never made it to production
+- [Debugging notes](docs/debugging-notes.md) — every actual bug I hit while building this, in my own words
 - [Demo report (normal)](docs/demo-report.md) · [Demo report (chaos)](docs/demo-report-chaos.md)
 
 ## Layout
