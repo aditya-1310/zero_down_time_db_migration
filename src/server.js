@@ -52,7 +52,11 @@ function insertOrder(db, body) {
     db.exec('COMMIT');
     return { id, customer_id: customerId };
   } catch (err) {
-    db.exec('ROLLBACK');
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      /* BEGIN itself failed — nothing to roll back, surface the real error */
+    }
     throw err;
   }
 }
@@ -81,7 +85,11 @@ function listOrders(db, limit) {
     db.exec('COMMIT');
     return { read_mode: readMode, orders };
   } catch (err) {
-    db.exec('ROLLBACK');
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      /* BEGIN itself failed — nothing to roll back, surface the real error */
+    }
     throw err;
   }
 }

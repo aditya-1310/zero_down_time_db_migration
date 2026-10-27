@@ -65,3 +65,25 @@ test('LoadGenerator classifies failures when the API is unreachable', async () =
   assert.equal(snap.fail, snap.total);
   assert.ok(Object.keys(snap.failByType).length >= 1, `failByType not populated: ${JSON.stringify(snap.failByType)}`);
 });
+
+test('a 500 response counts as a failure — the honesty property of the success metric', async () => {
+  const server = http.createServer((req, res) => {
+    res.writeHead(500, { 'content-type': 'application/json' });
+    res.end('{"error":"boom"}');
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const { port } = server.address();
+  try {
+    const lg = new LoadGenerator({ baseUrl: `http://127.0.0.1:${port}`, concurrency: 1, writeRatio: 0 });
+    lg.start();
+    await sleep(250);
+    const snap = await lg.stop();
+    assert.ok(snap.total > 0);
+    assert.equal(snap.fail, snap.total, 'every 500 must be a failure');
+    assert.equal(snap.ok, 0);
+    const types = Object.keys(snap.failByType).join(' ');
+    assert.match(types, /HTTP 500/, `expected an HTTP 500 classification, got: ${types}`);
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+});

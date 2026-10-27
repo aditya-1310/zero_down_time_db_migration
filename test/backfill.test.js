@@ -63,7 +63,7 @@ test('happy path: maps every order, FK intact, no duplicate customers', async ()
     });
 
     assert.equal(stats.rowsMapped, 200);
-    assert.equal(stats.batches, 3); // 2 full batches + 1 terminating empty check
+    assert.equal(stats.batches, 2); // only non-empty batches count
     assert.ok(stats.customersCreated > 0);
     assert.equal(typeof stats.elapsedMs, 'number');
     assert.ok(stats.elapsedMs >= 0);
@@ -135,7 +135,7 @@ test('idempotency: rerun after completion changes nothing', async () => {
     const second = await runBackfill(db, { batchSize: 100, throttleMs: 0 });
     assert.equal(second.rowsMapped, 0);
     assert.equal(second.customersCreated, 0);
-    assert.equal(second.batches, 1); // just the final empty check
+    assert.equal(second.batches, 0); // nothing to scan — clean drain
 
     assert.equal(one(db, 'SELECT count(*) AS c FROM customers'), customersBefore);
     assert.equal(one(db, 'SELECT count(*) AS c FROM orders WHERE customer_id IS NULL'), 0);
@@ -198,6 +198,58 @@ test('crash-safety: a stopped batch leaves committed rows consistent, rerun fini
     assert.equal(one(db, 'SELECT count(*) AS c FROM orders'), 150);
     const totals = db.prepare('SELECT count(*) AS c, count(DISTINCT email) AS d FROM customers').get();
     assert.equal(totals.c, totals.d);
+  } finally {
+    dispose(db, dir);
+  }
+});
+
+test('poison rows: invalid emails/names are skipped and reported, not turned into customers', async () => {
+  const { db, dir } = makeDb();
+  try {
+    const ins = db.prepare(
+      'INSERT INTO orders (customer_name, customer_email, amount_cents, status) VALUES (?, ?, ?, ?)'
+    );
+    ins.run('Good One', 'good@one.io', 100, 'new');
+    ins.run('Null Email', null, 200, 'new'); // would become customer "null"
+    ins.run('Empty Email', '   ', 300, 'new'); // would merge people into ''
+    ins.run('No At Sign', 'not-an-email', 400, 'new'); // no @ — not an address
+    ins.run(null, 'noname@x.io', 500, 'new'); // customers.name NOT NULL would wedge the batch
+
+    const stats = await runBackfill(db, { throttleMs: 0 });
+    assert.equal(stats.rowsMapped, 1);
+    assert.equal(stats.skipped, 4);
+    assert.equal(stats.skipReasons.invalid_email, 3);
+    assert.equal(stats.skipReasons.invalid_name, 1);
+
+    // only the valid row got a customer; poison rows stay NULL for a human
+    assert.equal(one(db, 'SELECT count(*) AS c FROM customers'), 1);
+    assert.equal(one(db, "SELECT count(*) AS c FROM customers WHERE email IN ('null', '', 'not-an-email')"), 0);
+    assert.equal(one(db, 'SELECT count(*) AS c FROM orders WHERE customer_id IS NULL'), 4);
+
+    // rerun must terminate (keyset scan) and not loop forever on the skips
+    const rerun = await runBackfill(db, { throttleMs: 0 });
+    assert.equal(rerun.rowsMapped, 0);
+    assert.equal(rerun.skipped, 4);
+    assert.equal(rerun.batches, 1);
+  } finally {
+    dispose(db, dir);
+  }
+});
+
+test('customersCreated counts creations exactly across same-email collisions', async () => {
+  const { db, dir } = makeDb();
+  try {
+    const ins = db.prepare(
+      'INSERT INTO orders (customer_name, customer_email, amount_cents, status) VALUES (?, ?, ?, ?)'
+    );
+    ins.run('A Person', 'same@person.io', 100, 'new');
+    ins.run('Same Person', 'SAME@person.io', 200, 'new');
+    ins.run('Same Again', '  same@person.io ', 300, 'new');
+
+    const stats = await runBackfill(db, { throttleMs: 0 });
+    assert.equal(stats.rowsMapped, 3);
+    assert.equal(stats.customersCreated, 1); // one real insert, two conflicts
+    assert.equal(one(db, 'SELECT count(*) AS c FROM customers'), 1);
   } finally {
     dispose(db, dir);
   }

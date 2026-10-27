@@ -39,10 +39,19 @@ export function runVerify(db) {
       actual: `${q('SELECT count(*) AS c FROM (SELECT email FROM customers GROUP BY email HAVING count(*) > 1)').c}`,
       ok: false,
     },
+    {
+      name: 'no_invalid_customers',
+      expected: '0 customers with an invalid email shape or empty name (poison-row guard)',
+      actual: `${q(`SELECT count(*) AS c FROM customers
+                    WHERE email = '' OR email NOT LIKE '%@%.%'
+                       OR name IS NULL OR trim(name) = ''`).c}`,
+      ok: false,
+    },
   ];
   checks[1].ok = checks[1].actual === '0';
   checks[2].ok = checks[2].actual === '0';
   checks[3].ok = checks[3].actual === '0';
+  checks[4].ok = checks[4].actual === '0';
 
   return {
     passed: checks.every((c) => c.ok),

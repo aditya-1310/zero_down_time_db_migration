@@ -33,6 +33,21 @@ function requireExpanded(db) {
   }
 }
 
+// After write_mode=new, inserts stop providing the legacy columns — they must
+// be nullable or every POST 500s. SQLite cannot ALTER a column to nullable in
+// place (that's a 12-step table rebuild); fresh databases built by this repo
+// already create them nullable. A pre-existing NOT NULL database needs the
+// rebuild (or the Postgres equivalent, ALTER COLUMN ... DROP NOT NULL) first.
+function requireLegacyColumnsNullable(db) {
+  const cols = db.prepare('PRAGMA table_info(orders)').all().filter((c) => ['customer_name', 'customer_email'].includes(c.name));
+  const notNull = cols.filter((c) => c.notnull === 1);
+  if (notNull.length > 0) {
+    fail(
+      `gate: orders.${notNull.map((c) => c.name).join(', ')} ${notNull.length === 1 ? 'is' : 'are'} NOT NULL — legacy columns must be nullable before writes stop (SQLite needs a table rebuild to relax this; see runbook §contract-prep)`
+    );
+  }
+}
+
 function requireVerifyPassed(db) {
   const v = lastVerifyResult(db);
   if (!v || !v.passed) {
@@ -81,6 +96,12 @@ const commands = {
       info(
         `backfill: done — ${stats.rowsMapped} rows mapped, ${stats.customersCreated} customers created in ${stats.batches} batches (${stats.elapsedMs}ms)`
       );
+      if (stats.skipped > 0) {
+        const reasons = Object.entries(stats.skipReasons).map(([r, n]) => `${r}: ${n}`).join(', ');
+        info(
+          `backfill: WARNING — ${stats.skipped} rows skipped (${reasons}). They stay unmapped on purpose; verify will FAIL until the data is fixed or the rows are excluded.`
+        );
+      }
     } catch (err) {
       markPhaseFailed(db, 'backfill', { error: String(err) });
       throw err;
@@ -90,8 +111,18 @@ const commands = {
   verify(db) {
     requireExpanded(db);
     markPhaseRunning(db, 'verify');
-    const result = runVerify(db);
-    markPhaseDone(db, 'verify', result);
+    let result;
+    try {
+      result = runVerify(db);
+    } catch (err) {
+      markPhaseFailed(db, 'verify', { error: String(err) });
+      throw err;
+    }
+    if (result.passed) {
+      markPhaseDone(db, 'verify', result);
+    } else {
+      markPhaseFailed(db, 'verify', result);
+    }
     info(formatVerify(result));
     if (!result.passed) {
       fail('verify: FAILED — cutover gates stay closed', 1);
@@ -117,6 +148,7 @@ const commands = {
   'stop-legacy-writes'(db) {
     requireExpanded(db);
     requireVerifyPassed(db);
+    requireLegacyColumnsNullable(db);
     if (getConfig(db, 'read_mode') !== 'joined') {
       fail('gate: reads must be cut over to joined before legacy writes stop (read_mode=joined)');
     }

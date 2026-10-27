@@ -481,6 +481,12 @@ try {
 if (aborted) {
   console.error(`\n=== ABORT ===`);
   console.error(String(aborted.message ?? aborted));
+  // A failed run must still leave a truthful report — otherwise the report
+  // file keeps the previous run's SUCCESS and lies to whoever reads it next.
+  const report = buildReport(false);
+  console.log(`\n${report}`);
+  mkdirSync(path.dirname(REPORT_PATH), { recursive: true });
+  writeFileSync(REPORT_PATH, report);
   console.error(`\nMIGRATION RESULT: FAILURE (aborted — see phase output above)`);
   process.exitCode = 1;
 } else {

@@ -28,7 +28,7 @@ only irreversible step (`contract`) comes last and is guarded by verification ga
 
 | # | Phase | Change | Downtime risk | Rollback |
 |---|-------|--------|---------------|----------|
-| 1 | **Expand** | `CREATE TABLE customers`; `ALTER TABLE orders ADD COLUMN customer_id INTEGER NULL` (+ index) | Low — additive DDL, old code paths untouched | Drop new column/table (nothing depends on them yet) |
+| 1 | **Expand** | `CREATE TABLE customers`; `ALTER TABLE orders ADD COLUMN customer_id INTEGER NULL` (+ index). Legacy columns become **nullable** if they weren't (Postgres: `ALTER COLUMN … DROP NOT NULL`; SQLite: baked into the baseline here because ALTER can't relax it without a rebuild) | Low — additive DDL, old code paths untouched | Drop new column/table (nothing depends on them yet) |
 | 2 | **Dual-write on** | App writes legacy columns **and** `customer_id` (upsert into `customers`) in one txn | Low — write amplification only | Flip `write_mode` back to `legacy` |
 | 3 | **Backfill** | Batched job maps historical rows to customers, sets `customer_id` | Low — throttled batches, no long locks | None needed — idempotent, safe to rerun |
 | 4 | **Verify** | Invariant checks (see §6); must pass before cutover | None (read-only) | n/a |
@@ -98,6 +98,15 @@ sequenceDiagram
    rebuild with default data we don't have yet — that's the lock we're avoiding.
    NULL is exactly "not yet backfilled", and the invariant "no NULLs after
    backfill" becomes the cutover gate.
+5. **Poison rows are skipped, never "fixed" silently.** Legacy tables carry
+   garbage: `NULL` emails, whitespace-only strings, addresses with no `@`. A
+   naive backfill turns `NULL` into a customer with email `"null"` (merging
+   strangers) or wedges forever on a `customers.name NOT NULL` violation.
+   The backfill validates each row against the same shape the API enforces,
+   leaves invalid rows unmapped, and reports them by reason. Verify then
+   **fails on purpose** (`no_unmapped_orders`) and holds the cutover gates
+   closed until a human fixes or excludes the data. A migration that hides
+   data-quality problems is worse than one that stops for them.
 
 ## 5. Concurrency & consistency model
 
@@ -110,8 +119,10 @@ sequenceDiagram
    interleave with an in-flight request's decisions.
 - **Idempotent backfill.** Batch = one transaction: upsert customers
    (`DO NOTHING`), then `UPDATE orders SET customer_id=? WHERE id=? AND
-   customer_id IS NULL`. Kill it anywhere, rerun, it continues — the `IS NULL`
-   predicate is the cursor.
+   customer_id IS NULL`. The scan is keyset-paginated (`id > cursor`) so a
+   single run visits each row once even when rows are skipped; across runs,
+   the `IS NULL` predicate is the resume point. Kill it anywhere, rerun, it
+   continues. Proven by `demo --chaos` (SIGKILL mid-run).
 - **Foreign keys ON.** `PRAGMA foreign_keys=ON` at every connection; the backfill
    cannot create orphans by construction, and verify re-checks it anyway.
 
@@ -130,6 +141,8 @@ sequenceDiagram
 | Failure | Blast radius | Mitigation |
 |---------|--------------|------------|
 | Backfill crash mid-run | None — rows processed so far keep their `customer_id` | Rerun; `IS NULL` predicate resumes. Proven by `demo --chaos`. |
+| Poison rows (NULL/empty/malformed email, NULL name) | Backfill wedges forever, or creates bogus customers that merge strangers | Rows validated + skipped with reason counts; verify fails on unmapped rows and holds the gates (§4.5) |
+| Legacy columns still NOT NULL when writes stop | Every POST 500s — the one guaranteed outage | `stop-legacy-writes` refuses unless the columns are nullable; nullability is relaxed during expand (§2) |
 | `SQLITE_BUSY` under contention | Latency spike | `busy_timeout` 5s; batches throttled (`sleep` between batches, lock held only per-batch) |
 | Dirty emails create dup customers | Data quality | Normalize `lower(trim())` at write + backfill |
 | Operator contracts too early | Outage | Hard gates in CLI: verify-pass + `write_mode=new` required; runbook marks contract as point of no return with pre-contract backup step |
